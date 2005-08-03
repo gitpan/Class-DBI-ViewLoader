@@ -1,0 +1,208 @@
+NAME
+    Class::DBI::ViewLoader - Load views from database tables as Class::DBI
+    objects
+
+SYNOPSIS
+        use Class::DBI::ViewLoader;
+
+        # set up loader object
+        $loader = new Class::DBI::ViewLoader (
+                dsn => 'dbi:Pg:dbname=mydb',
+                username => 'me',
+                password => 'mypasswd',
+                options => {
+                    RaiseError => 1,
+                    AutoCommit => 1
+                },
+                namespace => 'MyClass::View',
+                exclude => qr(^te(?:st|mp)_)i,
+                include => qr(_foo$),
+            );
+
+        # create classes
+        @classes = $loader->load_views;
+
+        MyClass::View::LiveFoo->retrieve_all()
+
+DESCRIPTION
+    This class loads views from databases as Class::DBI classes. It follows
+    roughly the same interface employed by Class::DBI::Loader.
+
+    This class behaves as a base class for the database-dependent driver
+    classes, which are loaded by Module::Pluggable. Objects are reblessed
+    into the relevant subclass as soon as the driver is discovered, see
+    set_dsn(). Driver classes should always be named
+    Class::DBI::ViewLoader::<driver_name>.
+
+CONSTRUCTOR
+  new
+        $obj = $class->new(%args)
+
+    Instantiates a new object. The values of %args are passed to the
+    relevant set_* accessors, detailed below. The following 2 statements
+    should be equivalent:
+
+        new Class::DBI::ViewLoader ( dsn => $dsn, username => $user );
+
+        new Class::DBI::ViewLoader->set_dsn($dsn)->set_username($user);
+
+ACCESSORS
+  set_dsn
+        $obj = $obj->set_dsn($dsn_string)
+
+    Sets the datasource for the object. This should be in the form
+    understood by DBI e.g. "dbi:Pg:dbname=mydb"
+
+    Calling this method will rebless the object into a handler class for the
+    given driver. If no handler is installed, "No handler for driver" will
+    be raised via croak().
+
+  get_dsn
+        $dsn = $obj->get_dsn
+
+    Returns the dsn string, as passed in by set_dsn.
+
+  set_username
+        $obj = $obj->set_username($username)
+
+    Sets the username to use when connecting to the database.
+
+  get_username
+        $username = $obj->get_username
+
+    Returns the username.
+
+  set_password
+        $obj = $obj->set_password
+
+    Sets the password to use when connecting to the database.
+
+  get_password
+        $password = $obj->get_password
+
+    Returns the password
+
+  set_options
+        $obj = $obj->set_dbi_options(%opts)
+
+    Accepts a hash or a hash reference.
+
+    Sets the additional configuration options to pass to DBI.
+
+    The hash will be copied internally, to prevent against any accidental
+    modification after assignment.
+
+  get_options
+        \%opts = $obj->get_dbi_options
+
+    Returns the DBI options hash. The return value should always be a hash
+    reference, even if there are no dbi options set.
+
+    The reference returned by this function is live, so modification of it
+    directly affects the object.
+
+  set_namespace
+        $obj = $obj->set_namespace($namespace)
+
+    Sets the namespace to load views into.
+
+  get_namespace
+        $namespace = $obj->get_namespace
+
+    Returns the target namespace. If not set, returns an empty list.
+
+  set_include
+        $obj = $obj->set_include($regexp)
+
+    Sets a regexp that matches the views to load.
+
+    Accepts strings or Regexps, croaks if any other reference is passed.
+
+    The value is stored as a Regexp, even if a string was passed in.
+
+  get_include
+        $regexp = $obj->get_include
+
+    Returns the include regular expression.
+
+    Note that this may not be identical to what was passed in.
+
+  set_exclude
+        $obj = $obj->set_exclude($regexp)
+
+    Sets a regexp to use to rule out views.
+
+    Accepts strings or Regexps, croaks if any other reference is passed.
+
+    The value is stored as a Regexp, even if a string was passed in.
+
+  get_exclude
+    Returns the exclude regular expression.
+
+    Note that this may not be identical to what was passed in.
+
+  load_views
+        @classes = $obj->load_views
+
+    The main method for the class, loads all relevant views from the
+    database and generates classes for those views.
+
+    The generated classes will and be read-only, and have a multi-column
+    primary key containing every column. This is because it is unlikely that
+    the view will have a real primary key.
+
+    Returns class names for all created classes.
+
+DRIVER METHODS
+    The following methods are provided by the relevant driver classes. If
+    they are called on a native Class::DBI::ViewLoader object (one without a
+    dsn set), they will cause fatal errors. They are mostly documented here
+    for the benefit of driver writers but they may prove useful for users
+    also.
+
+  base_class
+        $class = $driver->base_class
+
+    Returns the name of the base class to be used by generated classes.
+
+  get_views
+        @views = $driver->get_views;
+
+    Returns the names of all the views in the database.
+
+  get_view_cols
+        @columnss = $driver->get_view_cols($view);
+
+    Returns the names of all the columns in the given view.
+
+DIAGNOSTICS
+    The following fatal errors are raised by this class:
+
+    * No handler for driver %s, from dsn %s";
+        set_dsn couldn't find a driver handler for the given dsn. You may
+        need to install a plugin to handle your database.
+
+    * No handler loaded
+        load_views() or some other driver-dependent method was called on an
+        object which hadn't loaded a driver.
+
+    * %s not overridden
+        A driver did not override the given method.
+
+    * Couldn't connect to database
+        Self-explanatory. The DBI error string is appended to the error
+        message.
+
+    * Regexp or string required
+        set_include or set_exclude called with a ref other than 'Regexp'.
+
+    * Unrecognised arguments in new
+        new() encountered unsupported arguments. The offending arguments are
+        listed after the error message.
+
+SEE ALSO
+    DBI, Class::DBI, Class::DBI::Loader
+
+AUTHOR
+    Matt Lawrence <mattlaw@cpan.org>
+
