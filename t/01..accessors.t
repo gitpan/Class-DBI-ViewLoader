@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 38;
+use Test::More tests => 51;
 
 use lib qw( t/lib );
 
@@ -76,30 +76,63 @@ $loader->set_namespace('');
 @ns = $loader->get_namespace;
 is(@ns, 0, 'get_namespace with a \'\' namespace returns empty list');
 
-$loader = new Class::DBI::ViewLoader %args;
+# import/base class tests
+for my $type (qw(import base)) {
+    my @test_list = qw(X Y Z);
 
-my(@views);
-@views = $loader->load_views;
-is(@views, 2, 'Loaded 2 views');
-is($views[0], 'MyClass::TestView', 'created class MyClass::TestView');
-is($views[1], 'MyClass::ViewTwo',  'created class MyClass::TestView');
+    for my $class (@test_list) {
+	no strict 'refs';
+	@{$class.'::ISA'} = qw( Exporter );
+    }
 
-# isa_ok doesn't work on non-refs
-ok($views[0]->isa('Class::DBI::Mock'), "$views[0] isa Class::DBI::Mock");
-ok($views[1]->isa('Class::DBI::Mock'), "$views[1] isa Class::DBI::Mock");
+    my $setter = "set_${type}_classes";
+    my $adder  = "add_${type}_classes";
+    my $getter = "get_${type}_classes";
 
-$loader->set_exclude(qr(^test_));
-@views = $loader->load_views;
-is(@views, 1, 'load_views with exclude rule');
-is($views[0], 'MyClass::ViewTwo', '  returns as expected');
-$loader->set_exclude();
+    my @initial = $loader->$getter;
+    is(@initial, 0, "$getter returns empty list");
+    is($loader->$setter(@test_list), $loader, "$setter returned object");
+    is($loader->$getter, @test_list, "$getter got right number of classes");
+    is($loader->$adder('Foo'), $loader, "$adder returned object");
+    is($loader->$getter, @test_list + 1, "added test_list class");
 
+    # check arrayrefs too
+    is($loader->$setter(\@test_list), $loader, "$setter works on array ref");
+    is($loader->$getter, @test_list, "$getter got an array");
+}
 
-$loader->set_include(qr(^test_));
-@views = $loader->load_views;
-is(@views, 1, 'load_views with include rule');
-is($views[0], 'MyClass::TestView', '  returns as expected');
-$loader->set_include();
+# Class::DBI::Loader compatiblity tests
+$loader = eval {
+    new Class::DBI::ViewLoader (
+	    debug => 1,
+	    dsn => 'dbi:Mock:ignored',
+	    user => 'root',
+	    password => '',
+	    namespace => 'CDBI::Loader::Compat',
+	    additional_classes => qw(Class::DBI::AbstractSearch),
+	    additional_base_classes => qw(My::Stuff),
+	    constraint => '^foo.*',
+	    exclude => '^bar.*',
+	    relationships => 1,
+	);
+};
+ok(!$@, 'new() with Class::DBI::Loader args lives');
+
+# Let following tests fail but not die when the above fails
+$loader = new Class::DBI::ViewLoader unless defined $loader;
+
+is($loader->get_include(), qr(^foo.*), "get_include gets constraint");
+is($loader->get_exclude(), qr(^bar.*), "get_exclude gets exclude");
+
+my @classes;
+@classes = $loader->get_import_classes;
+is(@classes, 1, 'get_import_classes gets 1 class');
+is($classes[0], 'Class::DBI::AbstractSearch', 'get_import_classes gets additional_classes');
+@classes = $loader->get_base_classes;
+is(@classes, 1, 'get_base_classes gets 1 class');
+is($classes[0], 'My::Stuff', "get_base_classes gets additional_base_classes");
+
+is($loader->get_username, "root", "get_username returns user");
 
 __END__
 

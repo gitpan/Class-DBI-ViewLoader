@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 17;
+use Test::More tests => 25;
 
 use lib qw( t/lib );
 
@@ -27,7 +27,7 @@ like($@, qr(^No handler for driver\b), "new with bad dsn dies");
 
 # abstract method tests
 my $loader = new Class::DBI::ViewLoader;
-my @abstract = qw( base_class get_views get_view_cols );
+my @abstract = @Class::DBI::ViewLoader::driver_methods;
 for my $method (@abstract) {
     eval { $loader->$method };
     like($@, qr(^No handler loaded\b), "$method on object with no driver");
@@ -39,6 +39,9 @@ for my $method (@abstract) {
     like($@, qr(^$method not overridden\b), "$method on object with bad driver");
 }
 
+eval { $loader->completely_invalid_method };
+like($@, qr(^Can't locate object method), "Invalid method still dies");
+
 
 {
     my @warnings;
@@ -46,12 +49,45 @@ for my $method (@abstract) {
 
     # set up a view with no columns:
 
-    $Class::DBI::ViewLoader::Mock::db{empty} = [];
-    $loader->set_dsn('dbi:Mock:');
-    is($loader->load_views, 2, "load_views skipped empty view");
+    local $Class::DBI::ViewLoader::Mock::db{empty} = [];
+
+    my @classes = $loader->set_dsn('dbi:Mock:')->load_views;
+    my $expected = keys(%Class::DBI::ViewLoader::Mock::db) - 1;
+
+    is(@classes, $expected, "load_views skipped empty view");
     is(@warnings, 1, "1 warning generated");
     like($warnings[0], qr(^No columns found\b), "\"No columns found\"");
-    delete $Class::DBI::ViewLoader::Mock::db{empty};
+}
+
+for my $field (qw( username password )) {
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, $_[0] };
+
+    my $setter = "set_$field";
+    my $getter = "get_$field";
+
+    $loader->$setter();
+    is(@warnings, 0, 'set_username with no args gives no warning');
+    is($loader->$getter, undef, 'get_username returns undef')
+}
+
+# Test import from non-Exporter
+{
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, $_[0] };
+
+    my @classes = eval {
+	Class::DBI::ViewLoader->new
+	    ->set_dsn('dbi:Mock')
+	    ->set_namespace('ImportTest')
+	    ->set_import_classes(qw(Class::DBI::NullBase))
+	    ->load_views;
+    };
+    ok(!$@, 'non-Exporter in import_classes lives');
+    is(@warnings, @classes, '1 warning per classes loaded')
+	or diag join("\n", @warnings);
+
+    like($warnings[0], qr(^Class::DBI::NullBase has no import function\b), 'as expected');
 }
 
 eval { $loader->set_include({}) };

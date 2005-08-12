@@ -3,7 +3,7 @@ package Class::DBI::ViewLoader;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 NAME
 
@@ -25,6 +25,13 @@ Class::DBI::ViewLoader - Load views from database tables as Class::DBI objects
 	    namespace => 'MyClass::View',
 	    exclude => qr(^te(?:st|mp)_)i,
 	    include => qr(_foo$),
+	    import_classes => [qw(
+		Class::DBI::Plugin::RetrieveAll
+		Class::DBI::AbstractSearch
+	    )];
+	    base_classes => [qw(
+		MyBase
+	    )];
 	);
 
     # create classes
@@ -52,9 +59,14 @@ use Module::Pluggable (
 
 use Class::DBI;
 
+use UNIVERSAL qw( can isa );
+
 use Carp qw( croak confess );
 
 our %handlers = reverse map { /(.*::(.*))/ } __PACKAGE__->plugins();
+
+# Keep a record of all the classes we've created
+our %class_cache;
 
 =head1 CONSTRUCTOR
 
@@ -69,7 +81,47 @@ accessors, detailed below. The following 2 statements should be equivalent:
 
     new Class::DBI::ViewLoader->set_dsn($dsn)->set_username($user);
 
+For compatibilty with L<Class::DBI::Loader>, the following aliases are provided
+for use in the arguments to new() only.
+
+=over 4
+
+=item * user -> username
+
+=item * additional_classes -> import_classes
+
+=item * additional_base_classes -> base_classes
+
+=item * constraint -> include
+
+=back
+
+the debug and relationships options will be silently ignored.
+
+So
+
+    new Class::DBI::ViewLoader user => 'me', constraint => '^foo', debug => 1;
+
+Is equivalent to:
+
+    new Class::DBI::ViewLoader username => 'me', include => '^foo';
+
+
+Unrecognised options will cause a fatal error to be raised.
+
 =cut
+
+# Class::DBI::Loader compatibility
+my %compat = (
+	user => 'username',
+	additional_classes => 'import_classes',
+	additional_base_classes => 'base_classes',
+	constraint => 'include',
+
+	# False values to cause silent skipping
+	debug => '',
+	relationships => '',
+    );
 
 sub new {
     my($class, %args) = @_;
@@ -82,6 +134,14 @@ sub new {
     }
 
     for my $arg (keys %args) {
+	if (defined $compat{$arg}) {
+	    # silently skip unsupported Class::DBI::Loader args
+
+	    my $value = delete $args{$arg};
+	    $arg = $compat{$arg} or next;
+	    $args{$arg} = $value;
+	}
+
 	if (my $sub = $self->can("set_$arg")) {
 	    &$sub($self, delete $args{$arg});
 	}
@@ -122,6 +182,8 @@ sub set_dsn {
 	if ($handler->isa(__PACKAGE__)) {
 	    $self->{_dsn} = $dsn;
 
+	    $self->_clear_dbi_handle;
+
 	    # rebless into handler class
 	    bless $self, $handler;
 
@@ -154,7 +216,16 @@ Sets the username to use when connecting to the database.
 
 =cut
 
-sub set_username { $_[0]->{_username} = "$_[1]"; $_[0] }
+sub set_username {
+    my($self, $user) = @_;
+
+    # force stringification
+    $user = "$user" if defined $user;
+
+    $self->{_username} = $user;
+
+    return $self;
+}
 
 =head2 get_username
 
@@ -174,7 +245,16 @@ Sets the password to use when connecting to the database.
 
 =cut
 
-sub set_password { $_[0]->{_password} = "$_[1]"; $_[0] }
+sub set_password {
+    my($self, $pass) = @_;
+
+    # force stringification
+    $pass = "$pass" if defined $pass;
+
+    $self->{_password} = $pass;
+
+    return $self;
+}
 
 =head2 get_password
 
@@ -233,6 +313,7 @@ sub get_options {
 sub _get_dbi_args {
     my $self = shift;
 
+    # breaking encapsulation to use hashslice:
     return @$self{qw( _dsn _username _password _dbi_options )};
 }
 
@@ -249,12 +330,20 @@ sub _get_dbi_handle {
     return $self->{_dbh};
 }
 
+sub _clear_dbi_handle {
+    my $self = shift;
+
+    if (defined $self->{_dbh}) {
+	delete($self->{_dbh})->disconnect;
+    }
+
+    return $self;
+}
+
 sub DESTROY {
     my $self = shift;
 
-    if ($self->{_dbh}) {
-	$self->{_dbh}->disconnect;
-    }
+    $self->_clear_dbi_handle;
 }
 
 =head2 set_namespace
@@ -349,6 +438,8 @@ sub set_exclude {
 
 =head2 get_exclude
 
+    $regexp = $obj->get_exclude
+
 Returns the exclude regular expression.
 
 Note that this may not be identical to what was passed in.
@@ -387,6 +478,108 @@ sub _filter_views {
     return @views;
 }
 
+=head2 set_base_classes
+
+    $obj = $obj->set_base_classes(@classes)
+
+Sets classes for all generated classes to inherit from.
+
+This is in addition to the class specified by the driver's base_class method,
+which will always be the first item in the generated @ISA. 
+
+Note that these classes are not loaded for you, be sure C<use> or C<require>
+them manually before calling.
+
+=cut
+
+sub set_base_classes {
+    my $self = shift;
+
+    # We might get a ref from new()
+    my @classes = ref $_[0] ? @{$_[0]} : @_;
+
+    $self->{_base_classes} = \@classes;
+
+    return $self;
+}
+
+=head2 add_base_classes
+
+    $obj = $obj->add_base_classes(@classes)
+
+Appends to the list of base classes.
+
+=cut
+
+sub add_base_classes {
+    my($self, @new) = @_;
+
+    return $self->set_base_classes($self->get_base_classes, @new);
+}
+
+=head2 get_base_classes
+
+    @classes = $obj->get_base_classes
+
+Returns the list of base classes.
+
+=cut
+
+sub get_base_classes { @{$_[0]->{_base_classes} || []} }
+
+=head2 set_import_classes
+
+    $obj = $obj->set_import_classes(@classes)
+
+Sets a list of classes to import from. Note that these classes are not loaded by
+the generated class itself.
+
+    # Load the module first
+    require Class::DBI::Plugin::RetrieveAll;
+    
+    # Make generated classes import symbols
+    $loader->set_import_classes(qw(Class::DBI::Plugin::RetrieveAll));
+
+Any classes that inherit from Exporter will be loaded via Exporter's export()
+function. Any other classes are loaded by an import() in a string eval.
+
+=cut
+
+sub set_import_classes {
+    my $self = shift;
+
+    # We might get a ref from new()
+    my @classes = ref $_[0] ? @{$_[0]} : @_;
+
+    $self->{_import_classes} = \@classes;
+
+    return $self;
+}
+
+=head2 add_import_classes
+
+    $obj = $obj->add_import_classes(@classes)
+
+Appends to the list of import classes.
+
+=cut
+
+sub add_import_classes {
+    my($self, @new) = @_;
+
+    return $self->set_import_classes($self->get_import_classes, @new);
+}
+
+=head2 get_import_classes
+
+    @classes = $obj->get_import_classes
+
+=cut
+
+sub get_import_classes { @{$_[0]->{_import_classes} || []} }
+
+=head1 METHODS
+
 =head2 load_views
 
     @classes = $obj->load_views
@@ -398,7 +591,10 @@ The generated classes will and be read-only, and have a multi-column primary key
 containing every column. This is because it is unlikely that the view will have
 a real primary key.
 
-Returns class names for all created classes.
+Each class is only ever generated once.
+
+Returns class names for all created classes, including those that already
+existed.
 
 =cut
 
@@ -427,17 +623,20 @@ sub load_views {
 sub _create_class {
     my($self, $view, @columns) = @_;
 
+    # Don't load the same class twice
     my $class = $self->_view_to_class($view);
+
+    return $class if exists $class_cache{$class};
+
+    $class_cache{$class} = 1;
 
     {
 	no strict 'refs';
 	my $base = $self->base_class;
-	@{$class.'::ISA'} = $base;
+	@{$class.'::ISA'} = ($base, $self->get_base_classes);
     }
 
-    # Don't redefine db_Main
-    $class->set_db(Main => $self->_get_dbi_args)
-	unless $class->can('db_Main');
+    $class->set_db(Main => $self->_get_dbi_args);
 
     # Prevent attempts to write to views
     $class->make_read_only;
@@ -448,70 +647,130 @@ sub _create_class {
     # use a multi-column primary key containing all rows
     $class->columns(Primary => @columns);
 
+    $self->_do_imports($class);
+
     return $class;
 }
 
+sub _do_imports {
+    my($self, $class) = @_;
+
+    my @imports = $self->get_import_classes or return $self;
+
+    my @manual;
+    for my $module (@imports) {
+	if (isa($module, 'Exporter')) {
+	    # use Exporter's export method
+	    $module->export($class);
+	}
+	elsif (can($module, 'import')) {
+	    # add to list of manually imported classes
+	    push @manual, $module;
+	}
+	else {
+	    warn "$module has no import function\n";
+	}
+    }
+
+    # Load all manual imports in a single string eval.
+    if (@manual) {
+	eval "package $class;\n\n".
+	join("\n", map { "$_->import();" } @manual);
+    }
+
+    return $self;
+}
+
 # Convert a view name to a class name
-# cribbed from Class::DBI::Loader
 sub _view_to_class {
     my($self, $view) = @_;
 
+    # cribbed from Class::DBI::Loader
     $view = join('', map { ucfirst } split(/[\W_]+/, $view));
 
     return join('::', $self->get_namespace, $view);
 }
 
-=head1 DRIVER METHODS
+=head2 _get_dbi_handle
+
+    $dbh = $obj->_get_dbi_handle
+
+Returns a DBI handle based on the object's dsn, username and password. This
+generally shouldn't be called externally, but is documented for the benefit of
+driver writers.
+
+Making multiple calls to this method won't cause multiple connections to be
+made. A single handle is cached by the object from the first call to
+_get_dbi_handle until such time as the object goes out of scope or set_dsn is
+called again, at which time the handle is disconnected and the cache is cleared.
+
+=head1 DRIVERS
 
 The following methods are provided by the relevant driver classes. If they are
 called on a native Class::DBI::ViewLoader object (one without a dsn set), they
 will cause fatal errors. They are mostly documented here for the benefit of
 driver writers but they may prove useful for users also.
 
-=head2 base_class
+=over 4
+
+=item * base_class
 
     $class = $driver->base_class
 
-Returns the name of the base class to be used by generated classes.
+Should return the name of the base class to be used by generated classes. This
+will generally be a Class::DBI driver class.
 
-=cut
+    package Class::DBI::ViewLoader::Pg;
 
-sub base_class {
-    my $self = shift;
+    # Generate postgres classes
+    sub base_class { "Class::DBI::Pg" }
 
-    $self->_refer_to_handler();
-}
-
-=head2 get_views
+=item * get_views
 
     @views = $driver->get_views;
 
-Returns the names of all the views in the database.
+Should return the names of all the views in the database.
 
-=cut
+=item * get_view_cols
 
-sub get_views {
-    my $self = shift;
-
-    $self->_refer_to_handler()
-}
-
-=head2 get_view_cols
-
-    @columnss = $driver->get_view_cols($view);
+    @columns = $driver->get_view_cols($view);
 
 Returns the names of all the columns in the given view.
 
+=back
+
+A list of these methods is provided by this class, in
+@Class::DBI::ViewLoader::driver_methods, so that each driver can be sure that it
+is implementing all required methods. The provided t/04..plugin.t is a
+self-contained test script that checks a driver for compatibility with the
+current version of Class::DBI::ViewLoader, driver writers should be able to copy
+the test into their distribution and edit the driver name to provide basic
+compliance tests.
+
 =cut
 
-sub get_view_cols {
-    my $self = shift;
+our @driver_methods = qw(
+	base_class
+	get_views
+	get_view_cols
+    );
 
-    $self->_refer_to_handler();
+sub AUTOLOAD {
+    my $self = shift;
+    (my $sub = our $AUTOLOAD) =~ s/.*:://;
+
+    if (grep {$sub eq $_} @driver_methods) {
+	$self->_refer_to_handler($sub);
+    }
+    else {
+	my $super = "SUPER::$sub";
+	$self->$super(@_);
+    }
 }
 
 sub _refer_to_handler {
-    my $self = shift;
+    my($self, $sub) = @_;
+
     my $handler = ref $self;
 
     if ($handler eq __PACKAGE__) {
@@ -519,8 +778,6 @@ sub _refer_to_handler {
 	confess "No handler loaded, try calling set_dsn() first";
     }
     else {
-	my $sub = (caller(1))[3];
-	$sub =~ s/.*:://;
 	confess "$sub not overridden by $handler";
     }
 }
@@ -564,6 +821,21 @@ after the error message.
 
 =back
 
+The following warnings are generated:
+
+=over 4
+
+=item * No columns found in $view, skipping
+
+The view $view didn't have any columns, it won't be loaded.
+
+=item * $module has no import function
+
+The given module from the object's import_classes list couldn't be imported
+because it had no import() function.
+
+=back
+
 =head1 SEE ALSO
 
 L<DBI>, L<Class::DBI>, L<Class::DBI::Loader>
@@ -572,4 +844,12 @@ L<DBI>, L<Class::DBI>, L<Class::DBI::Loader>
 
 Matt Lawrence E<lt>mattlaw@cpan.orgE<gt>
 
+=head1 COPYRIGHT
+
+Copyright 2005 Matt Lawrence, All Rights Reserved.
+
+This program is free software; you can redistribute it and/or modify it under
+the same terms as Perl itself.
+
 =cut
+

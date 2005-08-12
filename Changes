@@ -1,0 +1,8 @@
+Changes document for Class::DBI::ViewLoader
+
+0.02 - this version
+	- Added Class::DBI::Loader compatibility
+	- Added base_classes and import_classes
+	- Added documentation for driver writers
+
+0.01 - initial version

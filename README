@@ -17,6 +17,13 @@ SYNOPSIS
                 namespace => 'MyClass::View',
                 exclude => qr(^te(?:st|mp)_)i,
                 include => qr(_foo$),
+                import_classes => [qw(
+                    Class::DBI::Plugin::RetrieveAll
+                    Class::DBI::AbstractSearch
+                )];
+                base_classes => [qw(
+                    MyBase
+                )];
             );
 
         # create classes
@@ -45,6 +52,26 @@ CONSTRUCTOR
         new Class::DBI::ViewLoader ( dsn => $dsn, username => $user );
 
         new Class::DBI::ViewLoader->set_dsn($dsn)->set_username($user);
+
+    For compatibilty with Class::DBI::Loader, the following aliases are
+    provided for use in the arguments to new() only.
+
+    * user -> username
+    * additional_classes -> import_classes
+    * additional_base_classes -> base_classes
+    * constraint -> include
+
+    the debug and relationships options will be silently ignored.
+
+    So
+
+        new Class::DBI::ViewLoader user => 'me', constraint => '^foo', debug => 1;
+
+    Is equivalent to:
+
+        new Class::DBI::ViewLoader username => 'me', include => '^foo';
+
+    Unrecognised options will cause a fatal error to be raised.
 
 ACCESSORS
   set_dsn
@@ -137,10 +164,58 @@ ACCESSORS
     The value is stored as a Regexp, even if a string was passed in.
 
   get_exclude
+        $regexp = $obj->get_exclude
+
     Returns the exclude regular expression.
 
     Note that this may not be identical to what was passed in.
 
+  set_base_classes
+        $obj = $obj->set_base_classes(@classes)
+
+    Sets classes for all generated classes to inherit from.
+
+    This is in addition to the class specified by the driver's base_class
+    method, which will always be the first item in the generated @ISA.
+
+    Note that these classes are not loaded for you, be sure "use" or
+    "require" them manually before calling.
+
+  add_base_classes
+        $obj = $obj->add_base_classes(@classes)
+
+    Appends to the list of base classes.
+
+  get_base_classes
+        @classes = $obj->get_base_classes
+
+    Returns the list of base classes.
+
+  set_import_classes
+        $obj = $obj->set_import_classes(@classes)
+
+    Sets a list of classes to import from. Note that these classes are not
+    loaded by the generated class itself.
+
+        # Load the module first
+        require Class::DBI::Plugin::RetrieveAll;
+    
+        # Make generated classes import symbols
+        $loader->set_import_classes(qw(Class::DBI::Plugin::RetrieveAll));
+
+    Any classes that inherit from Exporter will be loaded via Exporter's
+    export() function. Any other classes are loaded by an import() in a
+    string eval.
+
+  add_import_classes
+        $obj = $obj->add_import_classes(@classes)
+
+    Appends to the list of import classes.
+
+  get_import_classes
+        @classes = $obj->get_import_classes
+
+METHODS
   load_views
         @classes = $obj->load_views
 
@@ -151,29 +226,59 @@ ACCESSORS
     primary key containing every column. This is because it is unlikely that
     the view will have a real primary key.
 
-    Returns class names for all created classes.
+    Each class is only ever generated once.
 
-DRIVER METHODS
+    Returns class names for all created classes, including those that
+    already existed.
+
+  _get_dbi_handle
+        $dbh = $obj->_get_dbi_handle
+
+    Returns a DBI handle based on the object's dsn, username and password.
+    This generally shouldn't be called externally, but is documented for the
+    benefit of driver writers.
+
+    Making multiple calls to this method won't cause multiple connections to
+    be made. A single handle is cached by the object from the first call to
+    _get_dbi_handle until such time as the object goes out of scope or
+    set_dsn is called again, at which time the handle is disconnected and
+    the cache is cleared.
+
+DRIVERS
     The following methods are provided by the relevant driver classes. If
     they are called on a native Class::DBI::ViewLoader object (one without a
     dsn set), they will cause fatal errors. They are mostly documented here
     for the benefit of driver writers but they may prove useful for users
     also.
 
-  base_class
-        $class = $driver->base_class
+    * base_class
+            $class = $driver->base_class
 
-    Returns the name of the base class to be used by generated classes.
+        Should return the name of the base class to be used by generated
+        classes. This will generally be a Class::DBI driver class.
 
-  get_views
-        @views = $driver->get_views;
+            package Class::DBI::ViewLoader::Pg;
 
-    Returns the names of all the views in the database.
+            # Generate postgres classes
+            sub base_class { "Class::DBI::Pg" }
 
-  get_view_cols
-        @columnss = $driver->get_view_cols($view);
+    * get_views
+            @views = $driver->get_views;
 
-    Returns the names of all the columns in the given view.
+        Should return the names of all the views in the database.
+
+    * get_view_cols
+            @columns = $driver->get_view_cols($view);
+
+        Returns the names of all the columns in the given view.
+
+    A list of these methods is provided by this class, in
+    @Class::DBI::ViewLoader::driver_methods, so that each driver can be sure
+    that it is implementing all required methods. The provided
+    t/04..plugin.t is a self-contained test script that checks a driver for
+    compatibility with the current version of Class::DBI::ViewLoader, driver
+    writers should be able to copy the test into their distribution and edit
+    the driver name to provide basic compliance tests.
 
 DIAGNOSTICS
     The following fatal errors are raised by this class:
@@ -200,9 +305,24 @@ DIAGNOSTICS
         new() encountered unsupported arguments. The offending arguments are
         listed after the error message.
 
+    The following warnings are generated:
+
+    * No columns found in $view, skipping
+        The view $view didn't have any columns, it won't be loaded.
+
+    * $module has no import function
+        The given module from the object's import_classes list couldn't be
+        imported because it had no import() function.
+
 SEE ALSO
     DBI, Class::DBI, Class::DBI::Loader
 
 AUTHOR
     Matt Lawrence <mattlaw@cpan.org>
+
+COPYRIGHT
+    Copyright 2005 Matt Lawrence, All Rights Reserved.
+
+    This program is free software; you can redistribute it and/or modify it
+    under the same terms as Perl itself.
 
