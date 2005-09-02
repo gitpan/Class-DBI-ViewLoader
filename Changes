@@ -1,8 +1,15 @@
 Changes document for Class::DBI::ViewLoader
 
-0.02 - this version
+0.03 - Fri, 02 Sep 2005
+	- Eliminated unnecessary AUTOLOAD method
+	- Made view_to_class public
+	- Switched to using DBI's parse_dsn method for parsing DBI DSNs
+	- Improved error checking in set_dsn
+
+0.02 - Fri, 12 Aug 2005
 	- Added Class::DBI::Loader compatibility
 	- Added base_classes and import_classes
 	- Added documentation for driver writers
 
-0.01 - initial version
+0.01 - Wed, 03 Aug 2005
+	- initial version

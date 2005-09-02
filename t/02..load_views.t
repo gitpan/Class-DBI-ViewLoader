@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 13;
+use Test::More tests => 16;
 
 use lib qw( t/lib );
 
@@ -73,6 +73,11 @@ $loader->set_base_classes(qw(Class::DBI::NullBase))->set_namespace('BaseTest');
 
 @views = $loader->load_views;
 ok($views[0]->isa('Class::DBI::NullBase'), "$views[0] isa Class::DBI::NullBase");
+
+is($loader->view_to_class,     '', "view_to_class(undef) is ''");
+is($loader->view_to_class(''), '', "view_to_class('') is ''");
+$loader->set_namespace("NamingTest");
+is($loader->view_to_class('my_view'), 'NamingTest::MyView', 'view_to_class("my_view") as expected');
 
 __END__
 

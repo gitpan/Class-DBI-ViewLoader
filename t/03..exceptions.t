@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 25;
+use Test::More tests => 28;
 
 use lib qw( t/lib );
 
@@ -24,6 +24,15 @@ like($@, qr(^Unrecognised arguments in new\b), 'new with bad args dies');
 
 eval { new Class::DBI::ViewLoader ( dsn => 'dbi:Foo:whatever' ) };
 like($@, qr(^No handler for driver\b), "new with bad dsn dies");
+
+eval { new Class::DBI::ViewLoader ( dsn => 'DBI:Mock:whatever' ) };
+ok(!$@, 'captitalised "DBI:" in dsn lives') or diag $@;
+
+eval { new Class::DBI::ViewLoader ( dsn => 'DbI:invalid' ) };
+like($@, qr(^Invalid dsn), 'invalid dsn');
+
+eval { new Class::DBI::ViewLoader->set_dsn() };
+like($@, qr(^No dsn), 'absent dsn');
 
 # abstract method tests
 my $loader = new Class::DBI::ViewLoader;
@@ -78,7 +87,7 @@ for my $field (qw( username password )) {
 
     my @classes = eval {
 	Class::DBI::ViewLoader->new
-	    ->set_dsn('dbi:Mock')
+	    ->set_dsn('dbi:Mock:foo')
 	    ->set_namespace('ImportTest')
 	    ->set_import_classes(qw(Class::DBI::NullBase))
 	    ->load_views;
@@ -97,7 +106,8 @@ $Class::DBI::ViewLoader::handlers{'ReallyBad'} = 'ReallyBad';
 eval { new Class::DBI::ViewLoader ( dsn => 'dbi:ReallyBad:reallybad' ) };
 like($@, qr(^ReallyBad is not a [\w:]+ subclass\b), 'attempt to rebless to non-subclass');
 
-{ 
+{
+    # subvert DBI for testing purposes.
     my $can_connect = 1;
     my($dbh, $l);
     local *DBI::connect;
@@ -128,8 +138,6 @@ like($@, qr(^ReallyBad is not a [\w:]+ subclass\b), 'attempt to rebless to non-s
     eval { $l->_get_dbi_handle };
     like($@, qr(^Couldn't connect to database\b), "Simulated dbi failure");
 }
-
-
 
 __END__
 

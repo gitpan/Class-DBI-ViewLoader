@@ -3,11 +3,11 @@ package Class::DBI::ViewLoader;
 use strict;
 use warnings;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 =head1 NAME
 
-Class::DBI::ViewLoader - Load views from database tables as Class::DBI objects
+Class::DBI::ViewLoader - Load views from existing databases as Class::DBI objects
 
 =head1 SYNOPSIS
 
@@ -37,7 +37,14 @@ Class::DBI::ViewLoader - Load views from database tables as Class::DBI objects
     # create classes
     @classes = $loader->load_views;
 
+    # retrieve all rows from view live_foo
     MyClass::View::LiveFoo->retrieve_all()
+
+    # Get the class name from the view name
+    $class = $loader->view_to_class('live_foo');
+
+    # Works for views that weren't loaded too
+    $unloaded_class = $loader->view_to_class('test_foo');
 
 =head1 DESCRIPTION
 
@@ -57,6 +64,7 @@ use Module::Pluggable (
 	inner => 0
     );
 
+use DBI 1.43;
 use Class::DBI;
 
 use UNIVERSAL qw( can isa );
@@ -65,7 +73,8 @@ use Carp qw( croak confess );
 
 our %handlers = reverse map { /(.*::(.*))/ } __PACKAGE__->plugins();
 
-# Keep a record of all the classes we've created
+# Keep a record of all the classes we've created so we can avoid creating the
+# same one twice
 our %class_cache;
 
 =head1 CONSTRUCTOR
@@ -96,7 +105,7 @@ for use in the arguments to new() only.
 
 =back
 
-the debug and relationships options will be silently ignored.
+the debug and relationships options are not supported but are silently ignored.
 
 So
 
@@ -107,7 +116,7 @@ Is equivalent to:
     new Class::DBI::ViewLoader username => 'me', include => '^foo';
 
 
-Unrecognised options will cause a fatal error to be raised.
+Unrecognised options will cause a fatal error to be raised, see DIAGNOSTICS.
 
 =cut
 
@@ -166,22 +175,26 @@ Sets the datasource for the object. This should be in the form understood by
 L<DBI> e.g. "dbi:Pg:dbname=mydb"
 
 Calling this method will rebless the object into a handler class for the given
-driver. If no handler is installed, "No handler for driver" will be raised via
-croak().
+driver. If no such handler is installed, "No handler for driver" will be raised
+via croak(). See DIAGNOSTICS for other fatal errors raised by this method.
 
 =cut
 
 sub set_dsn {
     my($self, $dsn) = @_;
 
-    my($driver) = $dsn =~ /^dbi:(\w+)/;
+    croak "No dsn" unless $dsn;
+
+    my $driver = (DBI->parse_dsn($dsn))[1]
+	or croak "Invalid dsn '$dsn'";
 
     my $handler = $handlers{$driver};
 
     if ($handler) {
-	if ($handler->isa(__PACKAGE__)) {
+	if (isa($handler, __PACKAGE__)) {
 	    $self->{_dsn} = $dsn;
 
+	    # Clean up any existing DBI handle
 	    $self->_clear_dbi_handle;
 
 	    # rebless into handler class
@@ -194,7 +207,7 @@ sub set_dsn {
 	}
     }
     else {
-	croak "No handler for driver $driver, from dsn '$dsn'";
+	croak "No handler for driver '$driver', from dsn '$dsn'";
     }
 }
 
@@ -274,7 +287,7 @@ Accepts a hash or a hash reference.
 
 Sets the additional configuration options to pass to L<DBI>.
 
-The hash will be copied internally, to prevent against any accidental
+The hash will be copied internally, to guard against any accidental
 modification after assignment.
 
 =cut
@@ -330,6 +343,7 @@ sub _get_dbi_handle {
     return $self->{_dbh};
 }
 
+# disconnect current DBI handle, if any
 sub _clear_dbi_handle {
     my $self = shift;
 
@@ -350,7 +364,8 @@ sub DESTROY {
 
     $obj = $obj->set_namespace($namespace)
 
-Sets the namespace to load views into.
+Sets the namespace to load views into. This should be a valid perl package name,
+with or without a trailing '::'.
 
 =cut
 
@@ -388,7 +403,7 @@ sub get_namespace {
 
     $obj = $obj->set_include($regexp)
 
-Sets a regexp that matches the views to load.
+Sets a regexp that matches the views to load. Only views that match this expression will be loaded, unless they also match the exclude expression.
 
 Accepts strings or Regexps, croaks if any other reference is passed.
 
@@ -420,7 +435,9 @@ sub get_include { $_[0]->{_include} }
 
     $obj = $obj->set_exclude($regexp)
 
-Sets a regexp to use to rule out views. 
+Sets a regexp to use to rule out views. Any view that matches this regex will
+not be loaded by load_views(), even if it is explicitly included by the include
+rule.
 
 Accepts strings or Regexps, croaks if any other reference is passed.
 
@@ -487,8 +504,8 @@ Sets classes for all generated classes to inherit from.
 This is in addition to the class specified by the driver's base_class method,
 which will always be the first item in the generated @ISA. 
 
-Note that these classes are not loaded for you, be sure C<use> or C<require>
-them manually before calling.
+Note that these classes are not loaded for you, be sure to C<use> or C<require>
+them manually before calling load_views().
 
 =cut
 
@@ -587,14 +604,15 @@ sub get_import_classes { @{$_[0]->{_import_classes} || []} }
 The main method for the class, loads all relevant views from the database and
 generates classes for those views.
 
-The generated classes will and be read-only, and have a multi-column primary key
+The generated classes will and be read-only and have a multi-column primary key
 containing every column. This is because it is unlikely that the view will have
-a real primary key.
+a real primary key and Class::DBI insists that there should be a unique
+identifier for every row.
 
-Each class is only ever generated once.
+Each class is only ever generated once, no matter how many times load_views() is
+called.
 
-Returns class names for all created classes, including those that already
-existed.
+Returns class names for all created classes, including any that already existed.
 
 =cut
 
@@ -623,12 +641,10 @@ sub load_views {
 sub _create_class {
     my($self, $view, @columns) = @_;
 
+    my $class = $self->view_to_class($view);
+
     # Don't load the same class twice
-    my $class = $self->_view_to_class($view);
-
-    return $class if exists $class_cache{$class};
-
-    $class_cache{$class} = 1;
+    return $class if $class_cache{$class}++;
 
     {
 	no strict 'refs';
@@ -672,23 +688,40 @@ sub _do_imports {
 	}
     }
 
-    # Load all manual imports in a single string eval.
     if (@manual) {
+	# load classes via string eval (yuk!)
 	eval "package $class;\n\n".
-	join("\n", map { "$_->import();" } @manual);
+	    join("\n", map {"$_->import();"} @manual);
     }
 
     return $self;
 }
 
-# Convert a view name to a class name
-sub _view_to_class {
+=head2 view_to_class
+
+    $class = $obj->view_to_class($view)
+
+Returns the class for the given view name. This depends on the object's current
+namespace, see set_namespace(). It doesn't matter if the class has been loaded,
+or if the view exists in the database.
+
+If this method is called without arguments, or with an empty string, it returns
+an empty string.
+
+=cut
+
+sub view_to_class {
     my($self, $view) = @_;
 
-    # cribbed from Class::DBI::Loader
-    $view = join('', map { ucfirst } split(/[\W_]+/, $view));
+    if (defined $view and length $view) {
+	# cribbed from Class::DBI::Loader
+	$view = join('', map { ucfirst } split(/[\W_]+/, $view));
 
-    return join('::', $self->get_namespace, $view);
+	return join('::', $self->get_namespace, $view);
+    }
+    else {
+	return '';
+    }
 }
 
 =head2 _get_dbi_handle
@@ -696,20 +729,38 @@ sub _view_to_class {
     $dbh = $obj->_get_dbi_handle
 
 Returns a DBI handle based on the object's dsn, username and password. This
-generally shouldn't be called externally, but is documented for the benefit of
-driver writers.
+generally shouldn't be called externally (hence the leading underscore).
 
 Making multiple calls to this method won't cause multiple connections to be
 made. A single handle is cached by the object from the first call to
 _get_dbi_handle until such time as the object goes out of scope or set_dsn is
 called again, at which time the handle is disconnected and the cache is cleared.
 
+If the connection fails, a fatal error is raised.
+
+=head2 _clear_dbi_handle
+
+    $obj->_clear_dbi_handle
+
+This is the cleanup method for the object's DBI handle. It is called whenever
+the DBI handle needs to be closed down. Subclasses should override this method
+if they need to clean up any state data that relies on the current database
+connection, like statement handles for example.
+
+    sub _clear_dbi_handle {
+	my $self = shift;
+
+	delete $self->{statement_handle};
+
+	$self->SUPER::_clear_dbi_handle(@_);
+    }
+
 =head1 DRIVERS
 
 The following methods are provided by the relevant driver classes. If they are
 called on a native Class::DBI::ViewLoader object (one without a dsn set), they
-will cause fatal errors. They are mostly documented here for the benefit of
-driver writers but they may prove useful for users also.
+will cause fatal errors. They are documented here for the benefit of driver
+writers but they may prove useful for users also.
 
 =over 4
 
@@ -729,13 +780,13 @@ will generally be a Class::DBI driver class.
 
     @views = $driver->get_views;
 
-Should return the names of all the views in the database.
+Should return the names of all the views in the current database.
 
 =item * get_view_cols
 
     @columns = $driver->get_view_cols($view);
 
-Returns the names of all the columns in the given view.
+Should return the names of all the columns in the given view.
 
 =back
 
@@ -755,22 +806,13 @@ our @driver_methods = qw(
 	get_view_cols
     );
 
-sub AUTOLOAD {
-    my $self = shift;
-    (my $sub = our $AUTOLOAD) =~ s/.*:://;
-
-    if (grep {$sub eq $_} @driver_methods) {
-	$self->_refer_to_handler($sub);
-    }
-    else {
-	my $super = "SUPER::$sub";
-	$self->$super(@_);
-    }
+for my $method (@driver_methods) {
+    no strict 'refs';
+    *$method = sub { $_[0]->_refer_to_handler($method) };
 }
 
 sub _refer_to_handler {
     my($self, $sub) = @_;
-
     my $handler = ref $self;
 
     if ($handler eq __PACKAGE__) {
@@ -792,7 +834,15 @@ The following fatal errors are raised by this class:
 
 =over 4
 
-=item * No handler for driver %s, from dsn %s";
+=item * No dsn
+
+set_dsn was called without an argument
+
+=item * Invalid dsn %s
+
+the dsn passed to set_dsn couldn't be parsed by DBI->parse_dsn
+
+=item * No handler for driver %s, from dsn %s
 
 set_dsn couldn't find a driver handler for the given dsn. You may need to
 install a plugin to handle your database.
@@ -804,7 +854,8 @@ hadn't loaded a driver.
 
 =item * %s not overridden
 
-A driver did not override the given method.
+A driver did not override the given method. You may need to upgrade the driver
+class.
 
 =item * Couldn't connect to database
 
@@ -825,11 +876,11 @@ The following warnings are generated:
 
 =over 4
 
-=item * No columns found in $view, skipping
+=item * No columns found in %s, skipping
 
-The view $view didn't have any columns, it won't be loaded.
+The given view didn't have any columns, it won't be loaded.
 
-=item * $module has no import function
+=item * %s has no import function
 
 The given module from the object's import_classes list couldn't be imported
 because it had no import() function.

@@ -1,6 +1,6 @@
 NAME
-    Class::DBI::ViewLoader - Load views from database tables as Class::DBI
-    objects
+    Class::DBI::ViewLoader - Load views from existing databases as
+    Class::DBI objects
 
 SYNOPSIS
         use Class::DBI::ViewLoader;
@@ -29,7 +29,14 @@ SYNOPSIS
         # create classes
         @classes = $loader->load_views;
 
+        # retrieve all rows from view live_foo
         MyClass::View::LiveFoo->retrieve_all()
+
+        # Get the class name from the view name
+        $class = $loader->view_to_class('live_foo');
+
+        # Works for views that weren't loaded too
+        $unloaded_class = $loader->view_to_class('test_foo');
 
 DESCRIPTION
     This class loads views from databases as Class::DBI classes. It follows
@@ -61,7 +68,8 @@ CONSTRUCTOR
     * additional_base_classes -> base_classes
     * constraint -> include
 
-    the debug and relationships options will be silently ignored.
+    the debug and relationships options are not supported but are silently
+    ignored.
 
     So
 
@@ -71,7 +79,8 @@ CONSTRUCTOR
 
         new Class::DBI::ViewLoader username => 'me', include => '^foo';
 
-    Unrecognised options will cause a fatal error to be raised.
+    Unrecognised options will cause a fatal error to be raised, see
+    DIAGNOSTICS.
 
 ACCESSORS
   set_dsn
@@ -81,8 +90,9 @@ ACCESSORS
     understood by DBI e.g. "dbi:Pg:dbname=mydb"
 
     Calling this method will rebless the object into a handler class for the
-    given driver. If no handler is installed, "No handler for driver" will
-    be raised via croak().
+    given driver. If no such handler is installed, "No handler for driver"
+    will be raised via croak(). See DIAGNOSTICS for other fatal errors
+    raised by this method.
 
   get_dsn
         $dsn = $obj->get_dsn
@@ -116,7 +126,7 @@ ACCESSORS
 
     Sets the additional configuration options to pass to DBI.
 
-    The hash will be copied internally, to prevent against any accidental
+    The hash will be copied internally, to guard against any accidental
     modification after assignment.
 
   get_options
@@ -131,7 +141,8 @@ ACCESSORS
   set_namespace
         $obj = $obj->set_namespace($namespace)
 
-    Sets the namespace to load views into.
+    Sets the namespace to load views into. This should be a valid perl
+    package name, with or without a trailing '::'.
 
   get_namespace
         $namespace = $obj->get_namespace
@@ -141,7 +152,9 @@ ACCESSORS
   set_include
         $obj = $obj->set_include($regexp)
 
-    Sets a regexp that matches the views to load.
+    Sets a regexp that matches the views to load. Only views that match this
+    expression will be loaded, unless they also match the exclude
+    expression.
 
     Accepts strings or Regexps, croaks if any other reference is passed.
 
@@ -157,7 +170,9 @@ ACCESSORS
   set_exclude
         $obj = $obj->set_exclude($regexp)
 
-    Sets a regexp to use to rule out views.
+    Sets a regexp to use to rule out views. Any view that matches this regex
+    will not be loaded by load_views(), even if it is explicitly included by
+    the include rule.
 
     Accepts strings or Regexps, croaks if any other reference is passed.
 
@@ -178,8 +193,8 @@ ACCESSORS
     This is in addition to the class specified by the driver's base_class
     method, which will always be the first item in the generated @ISA.
 
-    Note that these classes are not loaded for you, be sure "use" or
-    "require" them manually before calling.
+    Note that these classes are not loaded for you, be sure to "use" or
+    "require" them manually before calling load_views().
 
   add_base_classes
         $obj = $obj->add_base_classes(@classes)
@@ -222,21 +237,33 @@ METHODS
     The main method for the class, loads all relevant views from the
     database and generates classes for those views.
 
-    The generated classes will and be read-only, and have a multi-column
+    The generated classes will and be read-only and have a multi-column
     primary key containing every column. This is because it is unlikely that
-    the view will have a real primary key.
+    the view will have a real primary key and Class::DBI insists that there
+    should be a unique identifier for every row.
 
-    Each class is only ever generated once.
+    Each class is only ever generated once, no matter how many times
+    load_views() is called.
 
-    Returns class names for all created classes, including those that
-    already existed.
+    Returns class names for all created classes, including any that already
+    existed.
+
+  view_to_class
+        $class = $obj->view_to_class($view)
+
+    Returns the class for the given view name. This depends on the object's
+    current namespace, see set_namespace(). It doesn't matter if the class
+    has been loaded, or if the view exists in the database.
+
+    If this method is called without arguments, or with an empty string, it
+    returns an empty string.
 
   _get_dbi_handle
         $dbh = $obj->_get_dbi_handle
 
     Returns a DBI handle based on the object's dsn, username and password.
-    This generally shouldn't be called externally, but is documented for the
-    benefit of driver writers.
+    This generally shouldn't be called externally (hence the leading
+    underscore).
 
     Making multiple calls to this method won't cause multiple connections to
     be made. A single handle is cached by the object from the first call to
@@ -244,12 +271,29 @@ METHODS
     set_dsn is called again, at which time the handle is disconnected and
     the cache is cleared.
 
+    If the connection fails, a fatal error is raised.
+
+  _clear_dbi_handle
+        $obj->_clear_dbi_handle
+
+    This is the cleanup method for the object's DBI handle. It is called
+    whenever the DBI handle needs to be closed down. Subclasses should
+    override this method if they need to clean up any state data that relies
+    on the current database connection, like statement handles for example.
+
+        sub _clear_dbi_handle {
+            my $self = shift;
+
+            delete $self->{statement_handle};
+
+            $self->SUPER::_clear_dbi_handle(@_);
+        }
+
 DRIVERS
     The following methods are provided by the relevant driver classes. If
     they are called on a native Class::DBI::ViewLoader object (one without a
-    dsn set), they will cause fatal errors. They are mostly documented here
-    for the benefit of driver writers but they may prove useful for users
-    also.
+    dsn set), they will cause fatal errors. They are documented here for the
+    benefit of driver writers but they may prove useful for users also.
 
     * base_class
             $class = $driver->base_class
@@ -265,12 +309,12 @@ DRIVERS
     * get_views
             @views = $driver->get_views;
 
-        Should return the names of all the views in the database.
+        Should return the names of all the views in the current database.
 
     * get_view_cols
             @columns = $driver->get_view_cols($view);
 
-        Returns the names of all the columns in the given view.
+        Should return the names of all the columns in the given view.
 
     A list of these methods is provided by this class, in
     @Class::DBI::ViewLoader::driver_methods, so that each driver can be sure
@@ -283,7 +327,13 @@ DRIVERS
 DIAGNOSTICS
     The following fatal errors are raised by this class:
 
-    * No handler for driver %s, from dsn %s";
+    * No dsn
+        set_dsn was called without an argument
+
+    * Invalid dsn %s
+        the dsn passed to set_dsn couldn't be parsed by DBI->parse_dsn
+
+    * No handler for driver %s, from dsn %s
         set_dsn couldn't find a driver handler for the given dsn. You may
         need to install a plugin to handle your database.
 
@@ -292,7 +342,8 @@ DIAGNOSTICS
         object which hadn't loaded a driver.
 
     * %s not overridden
-        A driver did not override the given method.
+        A driver did not override the given method. You may need to upgrade
+        the driver class.
 
     * Couldn't connect to database
         Self-explanatory. The DBI error string is appended to the error
@@ -307,10 +358,10 @@ DIAGNOSTICS
 
     The following warnings are generated:
 
-    * No columns found in $view, skipping
-        The view $view didn't have any columns, it won't be loaded.
+    * No columns found in %s, skipping
+        The given view didn't have any columns, it won't be loaded.
 
-    * $module has no import function
+    * %s has no import function
         The given module from the object's import_classes list couldn't be
         imported because it had no import() function.
 

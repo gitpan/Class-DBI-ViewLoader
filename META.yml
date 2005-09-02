@@ -1,18 +1,19 @@
 --- #YAML:1.0
 name: Class-DBI-ViewLoader
-version: 0.02
+version: 0.03
 author:
   - Matt Lawrence E<lt>mattlaw@cpan.orgE<gt>
 abstract: |-
-  Load views from database tables as Class::DBI objects
+  Load views from existing databases as Class::DBI objects
 license: perl
 requires:
   Class::DBI: 0
+  DBI: 1.43
   Module::Pluggable: 0
 build_requires:
   Test::More: 0
 provides:
   Class::DBI::ViewLoader:
     file: lib/Class/DBI/ViewLoader.pm
-    version: 0.02
+    version: 0.03
 generated_by: Module::Build version 0.2611

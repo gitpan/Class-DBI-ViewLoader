@@ -16,6 +16,7 @@ Build.PL - Build script generator for Class::DBI::ViewLoader
 Module::Build->new(
 	    module_name => "Class::DBI::ViewLoader",
 	    requires => {
+		'DBI' => "1.43",
 		'Class::DBI' => 0,
 		'Module::Pluggable' => 0,
 	    },
