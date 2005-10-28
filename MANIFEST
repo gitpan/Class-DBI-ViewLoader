@@ -9,6 +9,7 @@ t/01..accessors.t
 t/02..load_views.t
 t/03..exceptions.t
 t/04..plugin.t
+t/05..pod.t
 t/lib/Class/DBI/Mock.pm
 t/lib/Class/DBI/MockPlugin.pm
 t/lib/Class/DBI/NullBase.pm

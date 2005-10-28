@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name: Class-DBI-ViewLoader
-version: 0.03
+version: 0.04
 author:
   - Matt Lawrence E<lt>mattlaw@cpan.orgE<gt>
 abstract: |-
@@ -10,10 +10,13 @@ requires:
   Class::DBI: 0
   DBI: 1.43
   Module::Pluggable: 0
+recommends:
+  Test::Pod: 0
+  Test::Pod::Coverage: 0
 build_requires:
   Test::More: 0
 provides:
   Class::DBI::ViewLoader:
     file: lib/Class/DBI/ViewLoader.pm
-    version: 0.03
+    version: 0.04
 generated_by: Module::Build version 0.2611

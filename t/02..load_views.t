@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 16;
+use Test::More tests => 21;
 
 use lib qw( t/lib );
 
@@ -78,6 +78,19 @@ is($loader->view_to_class,     '', "view_to_class(undef) is ''");
 is($loader->view_to_class(''), '', "view_to_class('') is ''");
 $loader->set_namespace("NamingTest");
 is($loader->view_to_class('my_view'), 'NamingTest::MyView', 'view_to_class("my_view") as expected');
+
+# test for boolean bug
+
+my $i = MyClass::TestView->retrieve_all;
+isa_ok($i, 'Class::DBI::Iterator');
+is($i->count, 3, 'got 3 rows');
+for my $j (1 .. 2) {
+    my $row = $i->next;
+    ok($row, "row $j is true");
+}
+
+# last row should be false
+ok(!$i->next, "row 3 is false");
 
 __END__
 

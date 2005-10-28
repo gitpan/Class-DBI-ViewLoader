@@ -1,5 +1,11 @@
 Changes document for Class::DBI::ViewLoader
 
+0.04 - Fri, 28 Oct 2005
+	- Fixed bug whereby any row containing a null evaluated to false in
+	  boolean context
+        - Added Test::Pod and Test::Pod::Coverage tests
+        - Minimised use of string eval
+
 0.03 - Fri, 02 Sep 2005
 	- Eliminated unnecessary AUTOLOAD method
 	- Made view_to_class public

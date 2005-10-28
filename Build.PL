@@ -20,6 +20,10 @@ Module::Build->new(
 		'Class::DBI' => 0,
 		'Module::Pluggable' => 0,
 	    },
+            recommends => {
+                'Test::Pod' => 0,
+                'Test::Pod::Coverage' => 0,
+            },
 	    build_requires => {
 		'Test::More' => 0,
 	    },
