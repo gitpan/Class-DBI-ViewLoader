@@ -3,11 +3,12 @@ package Class::DBI::ViewLoader;
 use strict;
 use warnings;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 =head1 NAME
 
-Class::DBI::ViewLoader - Load views from existing databases as Class::DBI objects
+Class::DBI::ViewLoader - Load views from existing databases as Class::DBI
+classes
 
 =head1 SYNOPSIS
 
@@ -31,7 +32,9 @@ Class::DBI::ViewLoader - Load views from existing databases as Class::DBI object
 	    )];
 	    base_classes => [qw(
 		MyBase
-	    )];
+	    )],
+	    accessor_prefix => 'get_',
+	    mutator_prefix => 'set_',
 	);
 
     # create classes
@@ -64,12 +67,12 @@ use Module::Pluggable (
 	inner => 0
     );
 
-use DBI 1.43;
 use Class::DBI;
+use DBI 1.43;
 
 use UNIVERSAL qw( can isa );
 
-use Carp qw( croak confess );
+use Carp qw( carp croak confess );
 
 our %handlers = reverse map { /(.*::(.*))/ } __PACKAGE__->plugins();
 
@@ -138,28 +141,38 @@ sub new {
     my $self = bless {}, $class;
 
     # Do dsn first, as we may be reblessed
-    if ($args{dsn}) {
-	$self->set_dsn(delete $args{dsn});
+    if ($args{'dsn'}) {
+	$self->set_dsn(delete $args{'dsn'});
     }
 
+    $self->_compat(\%args);
+
     for my $arg (keys %args) {
-	if (defined $compat{$arg}) {
-	    # silently skip unsupported Class::DBI::Loader args
-
-	    my $value = delete $args{$arg};
-	    $arg = $compat{$arg} or next;
-	    $args{$arg} = $value;
-	}
-
-	if (my $sub = $self->can("set_$arg")) {
-	    &$sub($self, delete $args{$arg});
+	if (my $setter = $self->can("set_$arg")) {
+	    &$setter($self, delete $args{$arg});
 	}
     }
 
     if (%args) {
-	# All supported argumnets should have been deleted
+	# All supported arguments should have been deleted
 	my $extra = join(', ', map {"'$_'"} sort keys %args);
 	croak "Unrecognised arguments in new: $extra";
+    }
+
+    return $self;
+}
+
+sub _compat {
+    my ($self, $args) = @_;
+
+    for my $arg (keys %$args) {
+	if (defined $compat{$arg}) {
+	    my $value = delete $args->{$arg};
+
+	    # silently skip unsupported Class::DBI::Loader args
+	    $arg = $compat{$arg} or next;
+	    $args->{$arg} = $value;
+	}
     }
 
     return $self;
@@ -188,27 +201,31 @@ sub set_dsn {
     my $driver = (DBI->parse_dsn($dsn))[1]
 	or croak "Invalid dsn '$dsn'";
 
+    $self->_load_driver($driver)->{_dsn} = $dsn;
+
+    return $self;
+}
+
+# rebless into driver class
+sub _load_driver {
+    my ($self, $driver) = @_;
+
     my $handler = $handlers{$driver};
 
     if ($handler) {
 	if (isa($handler, __PACKAGE__)) {
-	    $self->{_dsn} = $dsn;
-
-	    # Clean up any existing DBI handle
-	    $self->_clear_dbi_handle;
-
 	    # rebless into handler class
 	    bless $self, $handler;
-
-	    return $self;
 	}
 	else {
 	    confess "$handler is not a ".__PACKAGE__." subclass";
 	}
     }
     else {
-	croak "No handler for driver '$driver', from dsn '$dsn'";
+	croak "No handler for driver '$driver'";
     }
+
+    return $self;
 }
 
 =head2 get_dsn
@@ -290,6 +307,9 @@ Sets the additional configuration options to pass to L<DBI>.
 The hash will be copied internally, to guard against any accidental
 modification after assignment.
 
+Options specified affect how the database that is used by the loader is built.
+This is not always the same handle that is used by generated classes.
+
 =cut
 
 sub set_options {
@@ -330,22 +350,37 @@ sub _get_dbi_args {
     return @$self{qw( _dsn _username _password _dbi_options )};
 }
 
-# Return a new DBI handle
+# Return a new or existing DBI handle
 # Drivers should use this method to access the database
 sub _get_dbi_handle {
     my $self = shift;
 
     return $self->{_dbh} if $self->{_dbh};
 
-    $self->{_dbh} = DBI->connect( $self->_get_dbi_args )
+    my $dbh = DBI->connect( $self->_get_dbi_args )
 	or croak "Couldn't connect to database, $DBI::errstr";
 
-    return $self->{_dbh};
+    $self->_set_dbi_handle($dbh);
+
+    return $dbh;
+}
+
+# set the DBI handle. Might one day be called directly..
+sub _set_dbi_handle {
+    my $self = shift;
+    my $dbh = shift;
+
+    $self->_clear_dbi_handle;
+    $self->{_dbh} = $dbh;
+
+    return $self;
 }
 
 # disconnect current DBI handle, if any
 sub _clear_dbi_handle {
     my $self = shift;
+
+    return $self if $self->_keepalive;
 
     if (defined $self->{_dbh}) {
 	delete($self->{_dbh})->disconnect;
@@ -358,6 +393,19 @@ sub DESTROY {
     my $self = shift;
 
     $self->_clear_dbi_handle;
+}
+
+# switch to disable _clear_dbi_handle
+sub _set_keepalive {
+    my $self = shift;
+    $self->{__keepalive} = shift;
+    return $self;
+}
+
+# check status of switch
+sub _keepalive {
+    my $self = shift;
+    return $self->{__keepalive};
 }
 
 =head2 set_namespace
@@ -538,11 +586,67 @@ sub add_base_classes {
 
     @classes = $obj->get_base_classes
 
-Returns the list of base classes.
+Returns the list of base classes, as supplied by set_base_classes.
 
 =cut
 
-sub get_base_classes { @{$_[0]->{_base_classes} || []} }
+sub get_base_classes {
+    return @{$_[0]->{_base_classes} || []}
+}
+
+=head2 set_left_base_classes
+
+Sets base classes like set_base_classes, except that the added classes will go
+before the driver's base_class.
+
+=cut
+
+sub set_left_base_classes {
+    my $self = shift;
+
+    # We might get a ref from new()
+    my @classes = ref $_[0] ? @{$_[0]} : @_;
+
+    $self->{_left_base_classes} = \@classes;
+
+    return $self;
+}
+
+=head2 get_left_base_classes
+
+    @classes = $obj->get_left_base_classes
+
+Returns the list of left base classes, as supplied by set_base_classes.
+
+=cut
+
+sub get_left_base_classes {
+    my $self = shift;
+
+    return @{ $self->{_left_base_classes} || [] }
+}
+
+=head2 add_left_base_classes
+
+    $obj = $obj->add_base_classes(@classes)
+
+Appends to the list of left base classes.
+
+=cut
+
+sub add_left_base_classes {
+    my ($self, @new) = @_;
+
+    return $self->set_left_base_classes($self->get_left_base_classes, @new);
+}
+
+sub _get_all_base_classes {
+    my $self = shift;
+
+    return reverse($self->get_left_base_classes),
+	   $self->base_class,
+	   $self->get_base_classes,
+}
 
 =head2 set_import_classes
 
@@ -557,8 +661,8 @@ the generated class itself.
     # Make generated classes import symbols
     $loader->set_import_classes(qw(Class::DBI::Plugin::RetrieveAll));
 
-Any classes that inherit from Exporter will be loaded via Exporter's export()
-function. Any other classes are loaded by an import() call in a string eval.
+Any classes that inherit from Exporter will be loaded via Exporter's C<export>
+function. Any other classes are loaded by a C<use> call in a string eval.
 
 =cut
 
@@ -591,9 +695,65 @@ sub add_import_classes {
 
     @classes = $obj->get_import_classes
 
+Returns the list of classes that will be imported into you generated classes.
+
 =cut
 
 sub get_import_classes { @{$_[0]->{_import_classes} || []} }
+
+=head2 set_accessor_prefix
+
+    $obj = $obj->set_accessor_prefix
+
+Sets the accessor prefix for generated classes. See L<Class::DBI> for details of
+how this works.
+
+=cut
+
+sub set_accessor_prefix {
+    my($self, $prefix) = @_;
+
+    $self->{_accessor} = "$prefix";
+
+    return $self;
+}
+
+=head2 get_accessor_prefix
+
+    $prefix = $obj->get_accessor_prefix
+
+Returns the object's accessor prefix.
+
+=cut
+
+sub get_accessor_prefix { $_[0]->{_accessor} }
+
+=head2 set_mutator_prefix
+
+    $obj = $obj->set_mutator_prefix
+
+Sets the mutator prefix for generated classes. See L<Class::DBI> for details of
+how this works.
+
+=cut
+
+sub set_mutator_prefix {
+    my($self, $prefix) = @_;
+
+    $self->{_mutator} = "$prefix";
+
+    return $self;
+}
+
+=head2 get_mutator_prefix
+
+    $prefix = $obj->get_mutator_prefix
+
+Returns the object's mutator prefix.
+
+=cut
+
+sub get_mutator_prefix { $_[0]->{_mutator} }
 
 =head1 METHODS
 
@@ -609,6 +769,11 @@ containing every column. This is because it is not guaranteed that the view will
 have a real primary key and Class::DBI insists that there should be a unique
 identifier for every row.
 
+If the newly generated class inherits a "Main" Class::DBI handle (via
+C<connection> or C<set_db> calls in base classes) that handle will be used by
+the class. Otherwise, a new connection is set up for the classes based on the
+loader's connection.
+
 Usually, any row containing an undef (NULL) primary key column is considered
 false in boolean context, in this particular case however that doesn't make much
 sense. So only all-null rows are considered false in classes generated by this
@@ -618,8 +783,7 @@ Each class is only ever generated once, no matter how many times load_views() is
 called. If you want to load the same view twice for some reason, you can achieve
 this by changing the namespace.
 
-Returns class names for all created classes, including any that were skipped due
-to already existing.
+Returns class names for all created classes.
 
 =cut
 
@@ -637,7 +801,7 @@ sub load_views {
 	    push @classes, $self->_create_class($view, @cols);
 	}
 	else {
-	    warn "No columns found in $view, skipping\n";
+	    carp "No columns found in $view, skipping\n";
 	}
     }
 
@@ -654,12 +818,12 @@ sub _create_class {
     my $class = $self->view_to_class($view);
 
     # Don't load the same class twice
-    return $class if $class_cache{$class}++;
+    return if $class_cache{$class}++;
 
     {
 	no strict 'refs';
 
-	@{$class.'::ISA'} = ($self->base_class, $self->get_base_classes);
+	@{$class.'::ISA'} = $self->_get_all_base_classes;
 
 	# We only want all-null primary keys to be considered false.
 	# (This method is used by the bool overloader)
@@ -672,7 +836,12 @@ sub _create_class {
 	};
     }
 
-    $class->set_db(Main => $self->_get_dbi_args);
+    $self->_setup_accessors($class);
+
+    # Only set up the connection explicitly if needed.
+    unless ($class->can('db_Main')) {
+	$class->connection($self->_get_dbi_args);
+    }
 
     # Prevent attempts to write to views
     $class->make_read_only;
@@ -688,6 +857,50 @@ sub _create_class {
     return $class;
 }
 
+# Handle different Class::DBI accessor / mutator name interfaces
+
+our ($_accessor_method, $_mutator_method);
+sub __detect_version {
+    my $v = $Class::DBI::VERSION;
+
+    $_accessor_method = 'accessor_name';
+    $_mutator_method = 'mutator_name';
+
+    if (ref $v eq 'version') {
+	if ($v >= version->new(3.0.7)) {
+	    $_accessor_method = 'accessor_name_for';
+	    $_mutator_method = 'mutator_name_for';
+	}
+    }
+}
+BEGIN { __detect_version() }
+
+sub _setup_accessors {
+    my ($self, $class) = @_;
+
+    no strict 'refs';
+
+    if (defined(my $accessor = $self->get_accessor_prefix)) {
+	my $method = "$class\::$_accessor_method";
+
+	*$method = sub {
+	    my ($self, $col) = @_;
+	    return $accessor . $col;
+	};
+    }
+
+    if (defined(my $mutator = $self->get_mutator_prefix)) {
+	my $method = "$class\::$_mutator_method";
+
+	*$method = sub {
+	    my ($self, $col) = @_;
+	    return $mutator . $col;
+	};
+    }
+
+    return $self;
+}
+
 # import symbols into the target namespace. Try to avoid string eval when
 # possible. This eval code is cached by _set_eval and can be executed with
 # _do_eval
@@ -699,15 +912,14 @@ sub _do_imports {
     my @manual;
     for my $module (@imports) {
 	if (isa($module, 'Exporter')) {
-	    # use Exporter's export method
+	    # use Exporter's export method, avoid string eval
 	    $module->export($class);
 	}
 	elsif (can($module, 'import')) {
-	    # add to list of manually imported classes
 	    push @manual, $module;
 	}
 	else {
-	    warn "$module has no import function\n";
+	    carp "$module has no import function";
 	}
     }
 
@@ -725,22 +937,24 @@ sub _set_eval {
 
     my $code = join("\n",
         "package $class;",
-        map {"$_->import();"} @manual
+        map {"use $_;"} @manual
     );
 
-    push @{$self->{__eval_string}}, $code;
+    push @{$self->{__eval_cache}}, $code;
 }
 
 # process pending eval code and reset
 sub _do_eval {
     my $self = shift;
 
-    my $code = delete $self->{__eval_string};
+    my $cache = delete $self->{__eval_cache};
 
-    if (defined $code) {
-        # trap errors?
+    if (defined $cache) {
+	my $code = join("\n\n", @$cache);
 
-        eval join("\n\n", @$code);
+	eval $code;
+
+	croak "Eval error!\nCode:\n$code\n\nMessage: $@" if $@;
     }
 
     return $self;
@@ -792,9 +1006,11 @@ If the connection fails, a fatal error is raised.
     $obj->_clear_dbi_handle
 
 This is the cleanup method for the object's DBI handle. It is called whenever
-the DBI handle needs to be closed down. Subclasses should override this method
-if they need to clean up any state data that relies on the current database
-connection, like statement handles for example.
+the DBI handle needs to be closed down. i.e. when a new handle is used or the
+object goes out of scope. Subclasses should override this method if they need to
+clean up any state data that relies on the current database connection, like
+statement handles for example. If you don't want the handle that the object is
+using to be disconnected, use the _set_keepalive method.
 
     sub _clear_dbi_handle {
 	my $self = shift;
@@ -803,6 +1019,29 @@ connection, like statement handles for example.
 
 	$self->SUPER::_clear_dbi_handle(@_);
     }
+
+=head2 _set_dbi_handle
+
+    $obj = $obj->_set_dbi_handle($dbh)
+
+This method is used to attach a DBI handle to the object. It might prove useful
+to use this method in order to use an existing database connection in the loader
+object. Note that unlike set_dsn, calling this method directly will not cause an
+appropriate driver to be loaded. See _load_driver for that.
+
+=head2 _set_keepalive
+
+    $obj = $obj->_set_keepalive($bool)
+
+When set to true, the database handle used by the object won't be disconnected automatically.
+
+=head2 _load_driver
+
+    $obj = $obj->_load_driver($driver_name)
+
+This method is used internally by set_dsn to load a driver to handle
+database-specific functionality. It can be called directly in conjunction with
+_set_dbi_handle to load views from an existing database connection.
 
 =head1 DRIVER METHODS
 
@@ -927,7 +1166,7 @@ The following warnings are generated:
 
 =item * No columns found in %s, skipping
 
-The given view didn't have any columns, it won't be loaded.
+The given view didn't seem to have any columns, it won't be loaded.
 
 =item * %s has no import function
 
@@ -935,6 +1174,12 @@ The given module from the object's import_classes list couldn't be imported
 because it had no import() function.
 
 =back
+
+=head1 BUGS
+
+With later versions of Class::DBI, columns names that clash with methods (such
+as 'id') can cause exceptions. Using accessor_prefix and mutator_prefix can help
+avoid this problem.
 
 =head1 SEE ALSO
 

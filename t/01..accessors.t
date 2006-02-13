@@ -1,7 +1,7 @@
 use strict;
 use warnings;
 
-use Test::More tests => 51;
+use Test::More tests => 71;
 
 use lib qw( t/lib );
 
@@ -21,6 +21,8 @@ my %args = (
 	username => 'me',
 	password => 'mypass',
 	namespace => 'MyClass',
+        accessor_prefix => 'get_',
+        mutator_prefix => 'set_',
     );
 
 my $loader = new Class::DBI::ViewLoader (
@@ -77,7 +79,7 @@ $loader->set_namespace('');
 is(@ns, 0, 'get_namespace with a \'\' namespace returns empty list');
 
 # import/base class tests
-for my $type (qw(import base)) {
+for my $type (qw(import base left_base)) {
     my @test_list = qw(X Y Z);
 
     for my $class (@test_list) {
@@ -111,6 +113,7 @@ $loader = eval {
 	    namespace => 'CDBI::Loader::Compat',
 	    additional_classes => qw(Class::DBI::AbstractSearch),
 	    additional_base_classes => qw(My::Stuff),
+            left_base_classes => [ qw(Left::One Left::Two) ],
 	    constraint => '^foo.*',
 	    exclude => '^bar.*',
 	    relationships => 1,
@@ -128,11 +131,27 @@ my @classes;
 @classes = $loader->get_import_classes;
 is(@classes, 1, 'get_import_classes gets 1 class');
 is($classes[0], 'Class::DBI::AbstractSearch', 'get_import_classes gets additional_classes');
-@classes = $loader->get_base_classes;
-is(@classes, 1, 'get_base_classes gets 1 class');
-is($classes[0], 'My::Stuff', "get_base_classes gets additional_base_classes");
+
+@classes = $loader->_get_all_base_classes;
+is(@classes, 4, 'get_base_classes gets 1 class');
+is($classes[0], 'Left::Two', "get_base_classes gets additional_base_classes");
+is($classes[1], 'Left::One', "get_base_classes gets additional_base_classes");
+is($classes[2], $loader->base_class, "get_base_classes gets additional_base_classes");
+is($classes[3], 'My::Stuff', "get_base_classes gets additional_base_classes");
 
 is($loader->get_username, "root", "get_username returns user");
+
+$loader = new Class::DBI::ViewLoader (
+        dsn => 'dbi:Mock:',
+        left_base_classes => 'Left', # Not a ref this time :-)
+        base_classes => 'Right',
+    );
+
+@classes = $loader->_get_all_base_classes;
+is(@classes, 3,          'new() with 1 left base class and 1 other base class');
+is($classes[0], 'Left',  'left base class comes first');
+is($classes[1], $loader->base_class, 'driver base_class in the middle');
+is($classes[2], 'Right', 'other base class comes last')
 
 __END__
 

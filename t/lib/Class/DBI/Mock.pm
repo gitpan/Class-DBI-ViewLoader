@@ -3,7 +3,9 @@ package Class::DBI::Mock;
 use strict;
 use warnings;
 
-our @ISA = qw( Class::DBI );
+use base qw( Class::DBI );
+
+use DBD::Mock;
 
 # provide dummy data conforming to Class::DBI::ViewLoader::Mock's test_view
 # view.

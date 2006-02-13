@@ -1,10 +1,10 @@
 use strict;
 use warnings;
 
-use Test::More tests => 21;
+use Test::More tests => 27;
 
+# load testing modules
 use lib qw( t/lib );
-
 require Class::DBI::NullPlugin;
 require Class::DBI::MockPlugin;
 require Class::DBI::NullBase;
@@ -26,9 +26,17 @@ my %args = (
 	password => 'mypass',
     );
 
+{
+    # set up a base class with a connection to inherit
+    no strict 'refs';
+    @{"MyBase\::ISA"} = qw( Class::DBI );
+    MyBase->connection('dbi:Mock:');
+}
+
 $loader = new Class::DBI::ViewLoader (
 	%args,
 	namespace => 'MyClass',
+        base_classes => 'MyBase',
     );
 
 @views = $loader->load_views;
@@ -36,22 +44,35 @@ is(@views, 2, 'Loaded 2 views');
 is($views[0], 'MyClass::TestView', 'created class MyClass::TestView');
 is($views[1], 'MyClass::ViewTwo',  'created class MyClass::TestView');
 
+# default column accessors
+can_ok('MyClass::TestView', qw( foo bar baz ));
+
 # isa_ok doesn't work on non-refs
 ok($views[0]->isa('Class::DBI::Mock'), "$views[0] isa Class::DBI::Mock");
 ok($views[1]->isa('Class::DBI::Mock'), "$views[1] isa Class::DBI::Mock");
 
-$loader->set_exclude(qr(^test_));
+my $parent_dbh = MyBase->db_Main;
+is($views[0]->db_Main, $parent_dbh, "$views[0] inherited db_Main");
+is($views[1]->db_Main, $parent_dbh, "$views[1] inherited db_Main");
+
+is($loader->load_views, 0, 'Attempt to reload classes fails.');
+
+# Be sure to change namespace too, so we don't try and reload existing classes
+$loader->set_exclude(qr(^test_))->set_namespace('MyClassA');
+$loader->set_accessor_prefix('get_')->set_mutator_prefix('set_');
 @views = $loader->load_views;
 is(@views, 1, 'load_views with exclude rule');
-is($views[0], 'MyClass::ViewTwo', '  returns as expected');
+is($views[0], 'MyClassA::ViewTwo', '  returns as expected');
 $loader->set_exclude();
-
 
 $loader->set_include(qr(^test_));
 @views = $loader->load_views;
 is(@views, 1, 'load_views with include rule');
-is($views[0], 'MyClass::TestView', '  returns as expected');
+is($views[0], 'MyClassA::TestView', '  returns as expected');
 $loader->set_include();
+
+# custom accessors
+can_ok('MyClassA::TestView', map { ("get_$_", "set_$_") } qw( foo bar baz));
 
 $loader = new Class::DBI::ViewLoader (
 	%args,
@@ -91,6 +112,17 @@ for my $j (1 .. 2) {
 
 # last row should be false
 ok(!$i->next, "row 3 is false");
+
+# Check non-inherited dbh setup
+
+$loader = new Class::DBI::ViewLoader (
+        dsn => 'dbi:Mock:',
+        namespace => 'MyDB',
+    );
+
+@views = $loader->load_views();
+is($views[0]->db_Main, $views[1]->db_Main,
+        "Loaded views share a handle without inheritance");
 
 __END__
 

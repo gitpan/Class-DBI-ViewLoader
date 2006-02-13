@@ -19,6 +19,7 @@ Module::Build->new(
 		'DBI' => "1.43",
 		'Class::DBI' => 0,
 		'Module::Pluggable' => 0,
+                'version'    => 0,
 	    },
             recommends => {
                 'Test::Pod' => 0,
@@ -26,6 +27,7 @@ Module::Build->new(
             },
 	    build_requires => {
 		'Test::More' => 0,
+                'DBD::Mock'  => '0.22',
 	    },
 	    license => 'perl',
 	    create_readme => 1,
